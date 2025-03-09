@@ -22,6 +22,9 @@ import {
   SelectValue,
 } from "@/app/components/ui/select";
 import { useTheme } from "next-themes";
+import { validarCedula, validarCorreo, validarContraseña } from '@/app/lib/validations';
+import { registrarCambio } from '@/app/lib/audit';
+import { Tooltip } from '@/app/components/ui/tooltip';
 
 interface Usuario {
   id: number;
@@ -85,6 +88,8 @@ export default function UsuariosPage() {
   const [usuarios, setUsuarios] = useState<Usuario[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [isEditing, setIsEditing] = useState(false);
+  const [usuarioEditando, setUsuarioEditando] = useState<Usuario | null>(null);
   
   // Estado para el formulario
   const [nuevoUsuario, setNuevoUsuario] = useState({
@@ -100,6 +105,41 @@ export default function UsuariosPage() {
   });
 
   const { theme } = useTheme();
+
+  // Añadir estado para validación en tiempo real
+  const [errores, setErrores] = useState({
+    nombres: '',
+    apellidos: '',
+    cedula: '',
+    usuario: '',
+    correo: '',
+    password: ''
+  });
+
+  // Función para validación en tiempo real
+  const validarCampo = (campo: string, valor: string) => {
+    switch (campo) {
+      case 'cedula':
+        if (!validarCedula(valor)) {
+          setErrores(prev => ({...prev, cedula: 'Cédula inválida'}));
+        } else {
+          setErrores(prev => ({...prev, cedula: ''}));
+        }
+        break;
+      case 'correo':
+        if (!validarCorreo(valor)) {
+          setErrores(prev => ({...prev, correo: 'Correo inválido'}));
+        } else {
+          setErrores(prev => ({...prev, correo: ''}));
+        }
+        break;
+      case 'password':
+        const validacion = validarContraseña(valor);
+        setErrores(prev => ({...prev, password: validacion.mensaje}));
+        break;
+      // Añadir más validaciones según necesidad
+    }
+  };
 
   useEffect(() => {
     const fetchUsers = async () => {
@@ -132,8 +172,32 @@ export default function UsuariosPage() {
 
   const handleCrearUsuario = async () => {
     try {
-      console.log('Iniciando creación de usuario...');
-      console.log('URL de Supabase:', process.env.NEXT_PUBLIC_SUPABASE_URL);
+      // Validaciones previas
+      if (!validarCedula(nuevoUsuario.cedula)) {
+        toast({
+          title: "Error",
+          description: "La cédula ingresada no es válida",
+          variant: "destructive"
+        });
+        return;
+      }
+
+      // Primero verificar si la cédula ya existe
+      const { data: existingUser } = await supabase
+        .from('usuarios')
+        .select('cedula')
+        .eq('cedula', nuevoUsuario.cedula)
+        .single();
+
+      if (existingUser) {
+        toast({
+          title: "Error",
+          description: "La cédula ingresada ya está registrada en el sistema",
+          variant: "destructive"
+        });
+        return;
+      }
+
       // Validación de campos obligatorios
       if (!nuevoUsuario.nombres || !nuevoUsuario.apellidos || !nuevoUsuario.cedula || 
           !nuevoUsuario.usuario || !nuevoUsuario.correo || !nuevoUsuario.password) {
@@ -151,24 +215,23 @@ export default function UsuariosPage() {
         cedula: nuevoUsuario.cedula,
         usuario: nuevoUsuario.usuario,
         correo: nuevoUsuario.correo,
-        password: nuevoUsuario.password, // Nota: En producción, esto debería manejarse de forma segura
+        password: nuevoUsuario.password,
         rol: nuevoUsuario.rol,
         estado: nuevoUsuario.estado,
         vigencia: nuevoUsuario.rol === 'admin' ? 0 : nuevoUsuario.vigencia,
         fecha_registro: new Date().toISOString()
       };
 
-      console.log('Intentando crear usuario:', usuarioData);
-      
       const { data, error } = await supabase
         .from('usuarios')
         .insert([usuarioData])
         .select()
         .single();
 
-      console.log('Respuesta:', { data, error });
-
       if (error) throw error;
+
+      // Registrar el cambio en el historial
+      await registrarCambio('crear', data.id, usuarioData);
 
       setUsuarios([...usuarios, data]);
       toast({
@@ -191,7 +254,7 @@ export default function UsuariosPage() {
       });
 
     } catch (error: any) {
-      console.error('Error completo:', error);
+      console.error('Error al crear usuario:', error);
       toast({
         title: "Error",
         description: error.message || "No se pudo crear el usuario",
@@ -208,7 +271,7 @@ export default function UsuariosPage() {
         .eq('id', id);
 
       if (error) throw error;
-
+      console.error('Error completo:', error);
       setUsuarios(usuarios.filter(usuario => usuario.id !== id));
       toast({
         title: "Éxito",
@@ -224,85 +287,53 @@ export default function UsuariosPage() {
     }
   };
 
-  const handleActualizarUsuario = async (usuario: Usuario) => {
+  const handleActualizarUsuario = async () => {
     try {
-      // Solo actualizamos campos no únicos por defecto
-      const actualizaciones: Partial<Usuario> = {
+      if (!usuarioEditando) {
+        throw new Error('No se ha seleccionado ningún usuario para actualizar');
+      }
+  
+      // Validar campos obligatorios
+      if (!nuevoUsuario.nombres || !nuevoUsuario.apellidos || 
+          !nuevoUsuario.usuario || !nuevoUsuario.correo) {
+        toast({
+          title: "Error",
+          description: "Por favor complete todos los campos obligatorios",
+          variant: "destructive"
+        });
+        return;
+      }
+  
+      const actualizaciones = {
         nombres: nuevoUsuario.nombres,
         apellidos: nuevoUsuario.apellidos,
         rol: nuevoUsuario.rol,
         estado: nuevoUsuario.estado,
         vigencia: nuevoUsuario.rol === 'admin' ? 0 : nuevoUsuario.vigencia,
+        usuario: nuevoUsuario.usuario,
+        correo: nuevoUsuario.correo,
       };
-
-      // Solo incluimos campos únicos si realmente cambiaron
-      if (nuevoUsuario.cedula !== usuario.cedula) {
-        // Verificar si la nueva cédula no existe en otro usuario
-        const { data: existingUser } = await supabase
-          .from('usuarios')
-          .select('id')
-          .eq('cedula', nuevoUsuario.cedula)
-          .neq('id', usuario.id)
-          .single();
-
-        if (!existingUser) {
-          actualizaciones.cedula = nuevoUsuario.cedula;
-        } else {
-          throw new Error('La cédula ya está en uso por otro usuario');
-        }
-      }
-
-      // Similar para usuario y correo
-      if (nuevoUsuario.usuario !== usuario.usuario) {
-        const { data: existingUser } = await supabase
-          .from('usuarios')
-          .select('id')
-          .eq('usuario', nuevoUsuario.usuario)
-          .neq('id', usuario.id)
-          .single();
-
-        if (!existingUser) {
-          actualizaciones.usuario = nuevoUsuario.usuario;
-        } else {
-          throw new Error('El nombre de usuario ya está en uso');
-        }
-      }
-
-      if (nuevoUsuario.correo !== usuario.correo) {
-        const { data: existingUser } = await supabase
-          .from('usuarios')
-          .select('id')
-          .eq('correo', nuevoUsuario.correo)
-          .neq('id', usuario.id)
-          .single();
-
-        if (!existingUser) {
-          actualizaciones.correo = nuevoUsuario.correo;
-        } else {
-          throw new Error('El correo ya está en uso');
-        }
-      }
-
-      console.log('Actualizaciones a realizar:', actualizaciones);
-
+  
       const { error } = await supabase
         .from('usuarios')
         .update(actualizaciones)
-        .eq('id', usuario.id);
-
+        .eq('id', usuarioEditando.id)
+        .select();
+  
       if (error) throw error;
-
+  
       // Actualizar estado local
-      const usuariosActualizados = usuarios.map(u => 
-        u.id === usuario.id ? {...u, ...actualizaciones} : u
-      );
-      setUsuarios(usuariosActualizados);
-      
+      setUsuarios(usuarios.map(u => 
+        u.id === usuarioEditando.id ? { ...u, ...actualizaciones } : u
+      ));
+  
       toast({
         title: "Éxito",
         description: "Usuario actualizado exitosamente",
       });
+  
       setIsDialogOpen(false);
+      setUsuarioEditando(null);
     } catch (error: any) {
       console.error('Error al actualizar usuario:', error);
       toast({
@@ -322,6 +353,7 @@ export default function UsuariosPage() {
   };
 
   const abrirDialogoActualizar = (usuario: Usuario) => {
+    setUsuarioEditando(usuario);
     setNuevoUsuario({
       nombres: usuario.nombres,
       apellidos: usuario.apellidos,
@@ -333,7 +365,41 @@ export default function UsuariosPage() {
       vigencia: usuario.vigencia,
       estado: usuario.estado
     });
+    setIsEditing(true); // Marcamos que estamos editando
     setIsDialogOpen(true);
+  };
+
+  const abrirDialogoCrear = () => {
+    setNuevoUsuario({
+      nombres: '',
+      apellidos: '',
+      cedula: '',
+      usuario: '',
+      correo: '',
+      password: '',
+      rol: 'pollos',
+      vigencia: 30,
+      estado: 1
+    });
+    setIsEditing(false); // Marcamos que estamos creando
+    setIsDialogOpen(true);
+  };
+
+  const cerrarDialogo = () => {
+    setIsDialogOpen(false);
+    setIsEditing(false);
+    setUsuarioEditando(null);
+    setNuevoUsuario({
+      nombres: '',
+      apellidos: '',
+      cedula: '',
+      usuario: '',
+      correo: '',
+      password: '',
+      rol: 'pollos',
+      vigencia: 30,
+      estado: 1
+    });
   };
 
   if (isLoading) {
@@ -395,360 +461,400 @@ export default function UsuariosPage() {
   };
 
   return (
-    <div className={`min-h-screen p-6 ${
-      theme === 'dark' ? 'bg-gray-900' : 'bg-gray-100'
+    <div className={`min-h-screen p-8 ${
+      theme === 'dark' ? 'bg-gray-900' : 'bg-gray-50'
     }`}>
-      <div className={`rounded-lg shadow-lg ${
+      <div className={`max-w-7xl mx-auto rounded-xl shadow-xl ${
         theme === 'dark' ? 'bg-gray-800' : 'bg-white'
-      } p-6`}>
-        <div className="flex justify-between items-center mb-6 border-b pb-4">
-          <h2 className={`text-2xl font-bold ${
-            theme === 'dark' ? 'text-white' : 'text-gray-800'
-          }`}>
-            Usuarios del Sistema
-          </h2>
-          <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="bg-blue-600 hover:bg-blue-700 text-white">
-                Crear Usuario
-              </Button>
-            </DialogTrigger>
-            <DialogContent className="sm:max-w-[525px]">
-              <DialogHeader>
-                <DialogTitle>Crear Nuevo Usuario</DialogTitle>
-                <DialogDescription>
-                  Complete los datos del usuario. Todos los campos marcados son obligatorios.
-                </DialogDescription>
-              </DialogHeader>
-              <div className="grid gap-4 py-4">
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="nombres" className="text-right">
-                    Nombres
-                  </Label>
-                  <Input
-                    id="nombres"
-                    className="col-span-3"
-                    value={nuevoUsuario.nombres}
-                    onChange={(e) => setNuevoUsuario({...nuevoUsuario, nombres: e.target.value})}
-                    required
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="apellidos" className="text-right">
-                    Apellidos
-                  </Label>
-                  <Input
-                    id="apellidos"
-                    className="col-span-3"
-                    value={nuevoUsuario.apellidos}
-                    onChange={(e) => setNuevoUsuario({...nuevoUsuario, apellidos: e.target.value})}
-                    required
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="cedula" className="text-right">
-                    Cédula
-                  </Label>
-                  <Input
-                    id="cedula"
-                    className="col-span-3"
-                    value={nuevoUsuario.cedula}
-                    onChange={(e) => setNuevoUsuario({...nuevoUsuario, cedula: e.target.value})}
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="usuario" className="text-right">
-                    Usuario
-                  </Label>
-                  <Input
-                    id="usuario"
-                    className="col-span-3"
-                    value={nuevoUsuario.usuario}
-                    onChange={(e) => setNuevoUsuario({...nuevoUsuario, usuario: e.target.value})}
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="correo" className="text-right">
-                    Correo
-                  </Label>
-                  <Input
-                    id="correo"
-                    type="email"
-                    className="col-span-3"
-                    value={nuevoUsuario.correo}
-                    onChange={(e) => setNuevoUsuario({...nuevoUsuario, correo: e.target.value})}
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="password" className="text-right">
-                    Contraseña
-                  </Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    className="col-span-3"
-                    value={nuevoUsuario.password}
-                    onChange={(e) => setNuevoUsuario({...nuevoUsuario, password: e.target.value})}
-                  />
-                </div>
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="rol" className="text-right">
-                    Rol
-                  </Label>
-                  <Select
-                    value={nuevoUsuario.rol}
-                    onValueChange={handleRolChange}
-                  >
-                    <SelectTrigger className="col-span-3">
-                      <SelectValue placeholder="Seleccione un rol" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="admin">Administrador</SelectItem>
-                      <SelectItem value="pollos">Pollos</SelectItem>
-                      <SelectItem value="chanchos">Chanchos</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-                {nuevoUsuario.rol !== 'admin' && (
+      } overflow-hidden`}>
+        {/* Header Section */}
+        <div className="p-6 border-b border-gray-200 dark:border-gray-700">
+          <div className="flex flex-col md:flex-row justify-between items-center space-y-4 md:space-y-0">
+            <div>
+              <h1 className={`text-2xl font-bold ${
+                theme === 'dark' ? 'text-white' : 'text-gray-900'
+              }`}>
+                Gestión de Usuarios
+              </h1>
+              <p className={`mt-1 text-sm ${
+                theme === 'dark' ? 'text-gray-400' : 'text-gray-500'
+              }`}>
+                Administre los usuarios del sistema y sus permisos
+              </p>
+            </div>
+            <Dialog open={isDialogOpen} onOpenChange={(open) => {
+              setIsDialogOpen(open);
+              if (!open) setIsEditing(false); // Reset editing state when closing
+            }}>
+              <DialogTrigger asChild>
+                <Button onClick={abrirDialogoCrear} className="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg
+                  transition-all duration-200 flex items-center space-x-2">
+                  <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                    <path fillRule="evenodd" d="M10 3a1 1 0 011 1v5h5a1 1 0 110 2h-5v5a1 1 0 11-2 0v-5H4a1 1 0 110-2h5V4a1 1 0 011-1z" clipRule="evenodd" />
+                  </svg>
+                  <span>Nuevo Usuario</span>
+                </Button>
+              </DialogTrigger>
+              <DialogContent className="sm:max-w-[525px]">
+                <DialogHeader>
+                  <DialogTitle>
+                    {isEditing ? 'Actualizar Usuario' : 'Crear Nuevo Usuario'}
+                  </DialogTitle>
+                  <DialogDescription>
+                    {isEditing ? 
+                      'Modifique los datos del usuario. La cédula no se puede editar.' :
+                      'Complete los datos del usuario. Todos los campos son obligatorios.'
+                    }
+                  </DialogDescription>
+                </DialogHeader>
+                <div className="grid gap-4 py-4">
                   <div className="grid grid-cols-4 items-center gap-4">
-                    <Label htmlFor="vigencia" className="text-right">
-                      Días de Vigencia
+                    <Label htmlFor="nombres" className="text-right">
+                      Nombres *
                     </Label>
                     <Input
-                      id="vigencia"
-                      type="number"
-                      min="1"
+                      id="nombres"
                       className="col-span-3"
-                      value={nuevoUsuario.vigencia || 30}
-                      onChange={(e) => {
-                        const valor = e.target.value ? Math.max(1, parseInt(e.target.value)) : 30;
-                        setNuevoUsuario({
-                          ...nuevoUsuario,
-                          vigencia: valor
-                        });
-                      }}
-                      placeholder="Ingrese los días de vigencia"
+                      value={nuevoUsuario.nombres}
+                      onChange={(e) => setNuevoUsuario({...nuevoUsuario, nombres: e.target.value})}
                       required
                     />
                   </div>
-                )}
-                <div className="grid grid-cols-4 items-center gap-4">
-                  <Label htmlFor="estado" className="text-right">
-                    Estado
-                  </Label>
-                  <Select
-                    value={nuevoUsuario.estado.toString()}
-                    onValueChange={(value) => setNuevoUsuario({...nuevoUsuario, estado: Number(value)})}
-                  >
-                    <SelectTrigger className="col-span-3">
-                      <SelectValue placeholder="Seleccione un estado" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="1">Activo</SelectItem>
-                      <SelectItem value="0">Inactivo</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-              <div className="flex justify-end gap-3">
-                <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-                  Cancelar
-                </Button>
-                <Button onClick={handleCrearUsuario}>
-                  Guardar
-                </Button>
-              </div>
-            </DialogContent>
-          </Dialog>
-        </div>
-        
-        <AlertasResumen />
-        
-        <div className={`rounded-lg border ${
-          theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
-        } overflow-hidden`}>
-          <table className="min-w-full divide-y divide-gray-200">
-            <thead className={`${
-              theme === 'dark' ? 'bg-gray-700' : 'bg-gray-50'
-            }`}>
-              <tr>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Nombres
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Apellidos
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Cédula
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Usuario
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Correo
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Rol
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Vigencia (días)
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Estado
-                </th>
-                <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
-                  theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                } uppercase tracking-wider`}>
-                  Acciones
-                </th>
-              </tr>
-            </thead>
-            <tbody className={`${
-              theme === 'dark' ? 'bg-gray-800 divide-gray-700' : 'bg-white divide-gray-200'
-            }`}>
-              {usuarios.map((usuario) => (
-                <tr key={usuario.id} className={`
-                  ${theme === 'dark' ? 
-                    'hover:bg-gray-700 border-gray-700' : 
-                    'hover:bg-gray-50 border-gray-200'
-                  }
-                  ${usuario.rol !== 'admin' && 
-                    calcularDiasRestantes(usuario.fecha_registro, usuario.vigencia) <= 5 && 
-                    calcularDiasRestantes(usuario.fecha_registro, usuario.vigencia) > 0
-                      ? theme === 'dark' ? 'bg-yellow-900/20' : 'bg-yellow-50' 
-                      : ''
-                  }
-                  border-b
-                `}>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${
-                    theme === 'dark' ? 'text-white' : 'text-gray-900'
-                  }`}>
-                    {usuario.nombres}
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    {usuario.apellidos}
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    {usuario.cedula}
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    {usuario.usuario}
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    {usuario.correo}
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                      usuario.rol === 'admin' 
-                        ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' 
-                        : usuario.rol === 'pollos' 
-                          ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
-                          : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
-                    }`}>
-                      {usuario.rol}
-                    </span>
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    {usuario.rol === 'admin' ? (
-                      <span className="text-gray-500">Sin caducidad</span>
-                    ) : (
-                      <>
-                        {(() => {
-                          const diasRestantes = calcularDiasRestantes(usuario.fecha_registro, usuario.vigencia);
-                          const estilo = getAlertStyle(diasRestantes, usuario.rol);
-                          
-                          return (
-                            <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${estilo}`}>
-                              {diasRestantes !== null ? (
-                                diasRestantes <= 0 ? 
-                                  'Caducado' : 
-                                  `${diasRestantes} días restantes`
-                              ) : (
-                                'Sin vigencia'
-                              )}
-                            </span>
-                          );
-                        })()}
-                      </>
-                    )}
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
-                      usuario.estado === 1 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
-                    }`}>
-                      {usuario.estado === 1 ? 'Activo' : 'Inactivo'}
-                    </span>
-                  </td>
-                  <td className={`px-6 py-4 whitespace-nowrap text-sm space-x-2 ${
-                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
-                  }`}>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      className={`
-                        ${theme === 'dark' 
-                          ? 'bg-blue-900/30 text-blue-300 hover:bg-blue-900/50' 
-                          : 'bg-blue-50 text-blue-700 hover:bg-blue-100'
-                        }
-                        border border-current
-                      `}
-                      onClick={() => abrirDialogoActualizar(usuario)}
-                    >
-                      Actualizar
-                    </Button>
-                    <Button 
-                      variant="outline" 
-                      size="sm"
-                      className={`
-                        ${theme === 'dark'
-                          ? 'bg-red-900/30 text-red-300 hover:bg-red-900/50'
-                          : 'bg-red-50 text-red-700 hover:bg-red-100'
-                        }
-                        border border-current
-                      `}
-                      onClick={() => {
-                        if (window.confirm('¿Está seguro de eliminar este usuario?')) {
-                          handleEliminarUsuario(usuario.id);
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="apellidos" className="text-right">
+                      Apellidos *
+                    </Label>
+                    <Input
+                      id="apellidos"
+                      className="col-span-3"
+                      value={nuevoUsuario.apellidos}
+                      onChange={(e) => setNuevoUsuario({...nuevoUsuario, apellidos: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Tooltip content="La cédula debe ser válida y única en el sistema">
+                      <Label htmlFor="cedula" className="text-right">
+                        Cédula *
+                      </Label>
+                    </Tooltip>
+                    <Input
+                      id="cedula"
+                      className={`col-span-3 ${isEditing ? 'bg-gray-100 cursor-not-allowed' : ''}`}
+                      value={nuevoUsuario.cedula}
+                      onChange={(e) => {
+                        if (!isEditing) {
+                          setNuevoUsuario({...nuevoUsuario, cedula: e.target.value});
+                          validarCampo('cedula', e.target.value);
                         }
                       }}
+                      disabled={isEditing}
+                      required
+                    />
+                    {errores.cedula && (
+                      <span className="text-red-500 text-xs mt-1">{errores.cedula}</span>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="usuario" className="text-right">
+                      Usuario *
+                    </Label>
+                    <Input
+                      id="usuario"
+                      className="col-span-3"
+                      value={nuevoUsuario.usuario}
+                      onChange={(e) => setNuevoUsuario({...nuevoUsuario, usuario: e.target.value})}
+                      required
+                    />
+                  </div>
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="correo" className="text-right">
+                      Correo *
+                    </Label>
+                    <Input
+                      id="correo"
+                      type="email"
+                      className="col-span-3"
+                      value={nuevoUsuario.correo}
+                      onChange={(e) => setNuevoUsuario({...nuevoUsuario, correo: e.target.value})}
+                      required
+                    />
+                  </div>
+                  {!isEditing && (
+                    <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="password" className="text-right">
+                        Contraseña *
+                      </Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        className="col-span-3"
+                        value={nuevoUsuario.password}
+                        onChange={(e) => setNuevoUsuario({...nuevoUsuario, password: e.target.value})}
+                        required={!isEditing}
+                      />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="rol" className="text-right">
+                      Rol *
+                    </Label>
+                    <Select
+                      value={nuevoUsuario.rol}
+                      onValueChange={handleRolChange}
+                      disabled={isEditing && nuevoUsuario.rol === 'admin'} // No permitir cambios de rol para admins
                     >
-                      Eliminar
-                    </Button>
-                  </td>
+                      <SelectTrigger className={`col-span-3 ${
+                        isEditing && nuevoUsuario.rol === 'admin' ? 'bg-gray-100 cursor-not-allowed' : ''
+                      }`}>
+                        <SelectValue placeholder="Seleccione un rol" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="admin">Administrador</SelectItem>
+                        <SelectItem value="pollos">Pollos</SelectItem>
+                        <SelectItem value="chanchos">Chanchos</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {nuevoUsuario.rol !== 'admin' && (
+                    <div className="grid grid-cols-4 items-center gap-4">
+                      <Label htmlFor="vigencia" className="text-right">
+                        Días de Vigencia *
+                      </Label>
+                      <Input
+                        id="vigencia"
+                        type="number"
+                        min="1"
+                        className="col-span-3"
+                        value={nuevoUsuario.vigencia || 30}
+                        onChange={(e) => {
+                          const valor = e.target.value ? Math.max(1, parseInt(e.target.value)) : 30;
+                          setNuevoUsuario({
+                            ...nuevoUsuario,
+                            vigencia: valor
+                          });
+                        }}
+                        required
+                      />
+                    </div>
+                  )}
+                  <div className="grid grid-cols-4 items-center gap-4">
+                    <Label htmlFor="estado" className="text-right">
+                      Estado *
+                    </Label>
+                    <Select
+                      value={nuevoUsuario.estado.toString()}
+                      onValueChange={(value) => setNuevoUsuario({...nuevoUsuario, estado: Number(value)})}
+                    >
+                      <SelectTrigger className="col-span-3">
+                        <SelectValue placeholder="Seleccione un estado" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="1">Activo</SelectItem>
+                        <SelectItem value="0">Inactivo</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="flex justify-end gap-3">
+                  <Button variant="outline" onClick={cerrarDialogo}>
+                    Cancelar
+                  </Button>
+                  <Button 
+                    onClick={isEditing ? handleActualizarUsuario : handleCrearUsuario}
+                    className={isEditing ? 'bg-blue-600 hover:bg-blue-700' : 'bg-green-600 hover:bg-green-700'}
+                  >
+                    {isEditing ? 'Actualizar' : 'Guardar'}
+                  </Button>
+                </div>
+              </DialogContent>
+            </Dialog>
+          </div>
+        </div>
+        <div className="p-6">
+          <AlertasResumen />
+        </div>
+        <div className="p-6">
+          <div className={`overflow-x-auto rounded-lg border ${
+            theme === 'dark' ? 'border-gray-700' : 'border-gray-200'
+          }`}>
+            <table className="min-w-full divide-y divide-gray-200 dark:divide-gray-700">
+              <thead className={`${
+                theme === 'dark' ? 'bg-gray-700/50' : 'bg-gray-50'
+              }`}>
+                <tr>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Nombres
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Apellidos
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Cédula
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Usuario
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Correo
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Rol
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Vigencia (días)
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Estado
+                  </th>
+                  <th scope="col" className={`px-6 py-3 text-left text-xs font-medium ${
+                    theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                  } uppercase tracking-wider`}>
+                    Acciones
+                  </th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody className={`divide-y ${
+                theme === 'dark' ? 'divide-gray-700' : 'divide-gray-200'
+              }`}>
+                {usuarios.map((usuario) => (
+                  <tr key={usuario.id} 
+                      className={`transition-colors duration-200 ${
+                        theme === 'dark' 
+                          ? 'hover:bg-gray-700/50' 
+                          : 'hover:bg-gray-50'
+                      }`}>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm font-medium ${
+                      theme === 'dark' ? 'text-white' : 'text-gray-900'
+                    }`}>
+                      {usuario.nombres}
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    }`}>
+                      {usuario.apellidos}
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    } italic`}>
+                      {usuario.cedula} <span className="text-xs text-gray-400">(no editable)</span>
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    }`}>
+                      {usuario.usuario}
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm text-gray-500 ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    }`}>
+                      {usuario.correo}
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    }`}>
+                      <span className={`px-2 py-1 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        usuario.rol === 'admin' 
+                          ? 'bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-200' 
+                          : usuario.rol === 'pollos' 
+                            ? 'bg-blue-100 text-blue-800 dark:bg-blue-900 dark:text-blue-200'
+                            : 'bg-yellow-100 text-yellow-800 dark:bg-yellow-900 dark:text-yellow-200'
+                      }`}>
+                        {usuario.rol}
+                      </span>
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    }`}>
+                      {usuario.rol === 'admin' ? (
+                        <span className="text-gray-500">Sin caducidad</span>
+                      ) : (
+                        <>
+                          {(() => {
+                            const diasRestantes = calcularDiasRestantes(usuario.fecha_registro, usuario.vigencia);
+                            const estilo = getAlertStyle(diasRestantes, usuario.rol);
+                            return (
+                              <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${estilo}`}>
+                                {diasRestantes !== null ? (
+                                  diasRestantes <= 0 ? 
+                                    'Caducado' : 
+                                    `${diasRestantes} días restantes`
+                                ) : (
+                                  'Sin vigencia'
+                                )}
+                              </span>
+                            );
+                          })()}
+                        </>
+                      )}
+                    </td>
+                    <td className={`px-6 py-4 whitespace-nowrap text-sm ${
+                      theme === 'dark' ? 'text-gray-300' : 'text-gray-500'
+                    }`}>
+                      <span className={`px-2 inline-flex text-xs leading-5 font-semibold rounded-full ${
+                        usuario.estado === 1 ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-800'
+                      }`}>
+                        {usuario.estado === 1 ? 'Activo' : 'Inactivo'}
+                      </span>
+                    </td>
+                    <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
+                      <div className="flex justify-end space-x-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={`inline-flex items-center px-3 py-1 rounded-md ${
+                            theme === 'dark' 
+                              ? 'bg-blue-900/30 text-blue-400 hover:bg-blue-800/50' 
+                              : 'bg-blue-50 text-blue-600 hover:bg-blue-100'
+                          }`}
+                          onClick={() => abrirDialogoActualizar(usuario)}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor">
+                            <path d="M13.586 3.586a2 2 0 112.828 2.828l-.793.793-2.828-2.828.793-.793zm-2.207 2.207L3 14.172V17h2.828l8.38-8.379-2.83-2.828z" />
+                          </svg>
+                          Editar
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className={`inline-flex items-center px-3 py-1 rounded-md ${
+                            theme === 'dark'
+                              ? 'bg-red-900/30 text-red-400 hover:bg-red-800/50'
+                              : 'bg-red-50 text-red-600 hover:bg-red-100'
+                          }`}
+                          onClick={() => {
+                            if (window.confirm('¿Está seguro de eliminar este usuario?')) {
+                              handleEliminarUsuario(usuario.id);
+                            }
+                          }}
+                        >
+                          <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 mr-1" viewBox="0 0 20 20" fill="currentColor">
+                            <path fillRule="evenodd" d="M9 2a1 1 0 00-.894.553L7.382 4H4a1 1 0 000 2v10a2 2 0 002 2h8a2 2 0 002-2V6a1 1 0 100-2h-3.382l-.724-1.447A1 1 0 0011 2H9zM7 8a1 1 0 012 0v6a1 1 0 11-2 0V8zm5-1a1 1 0 00-1 1v6a1 1 0 102 0V8a1 1 0 00-1-1z" clipRule="evenodd" />
+                          </svg>
+                          Eliminar
+                        </Button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
