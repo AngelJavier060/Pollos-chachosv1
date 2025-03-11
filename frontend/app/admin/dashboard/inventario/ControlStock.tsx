@@ -1,11 +1,19 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { supabase } from '@/app/lib/supabase';
 import { Card, CardContent, CardHeader, CardTitle } from "@/app/components/ui/card";
 import { Progress } from "@/app/components/ui/progress";
 import { Alert, AlertDescription, AlertTitle } from "@/app/components/ui/alert";
 import { AlertCircle, Package2, AlertTriangle } from "lucide-react";
 import { Button } from "@/app/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/app/components/ui/select";
 
 interface Producto {
   id: string;
@@ -15,11 +23,12 @@ interface Producto {
   critico: number;
   tipo: 'alimento' | 'medicina' | 'otro';
   estado: 'active' | 'low_stock' | 'critical' | 'cycle_ended';
-  ciclo_actual?: {
-    id: string;
-    fecha_inicio: string;
-    fecha_fin?: string;
-  };
+  unidad_medida: 'kg' | 'g' | 'l' | 'ml' | 'unidad';
+  fecha_vencimiento?: string;
+  lote?: string;
+  proveedor?: string;
+  ubicacion?: string;
+  ultimo_movimiento?: string;
 }
 
 export default function ControlStock() {
@@ -30,87 +39,110 @@ export default function ControlStock() {
     mensaje: string;
     fecha: string;
   }[]>([]);
+  const [filtroTipo, setFiltroTipo] = useState<string>('todos');
+  const [ordenarPor, setOrdenarPor] = useState<string>('nombre');
 
   useEffect(() => {
-    fetchProductos();
+    fetchProductosFromSupabase();
   }, []);
 
-  // Verificar niveles de stock y generar alertas automáticamente
-  useEffect(() => {
-    const nuevasAlertas = [];
-    const productosActualizados = productos.map(producto => {
-      let nuevoEstado = producto.estado;
-      let registrarHistorial = false;
+  const fetchProductosFromSupabase = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('productos')
+        .select('*')
+        .order('nombre', { ascending: true });
 
-      // Verificar nivel crítico
-      if (producto.cantidad <= producto.critico && producto.estado !== 'cycle_ended') {
-        nuevoEstado = 'critical';
-        nuevasAlertas.push({
-          producto_id: producto.id,
-          tipo: 'critico',
-          mensaje: `¡CRÍTICO! ${producto.nombre} ha alcanzado el nivel crítico (${producto.cantidad} unidades)`,
-          fecha: new Date().toISOString()
-        });
-        registrarHistorial = true;
+      if (error) throw error;
+      if (data) {
+        setProductos(data);
+        verificarNiveles(data);
       }
-      // Verificar nivel mínimo
-      else if (producto.cantidad <= producto.minimo && producto.estado === 'active') {
-        nuevoEstado = 'low_stock';
-        nuevasAlertas.push({
-          producto_id: producto.id,
-          tipo: 'bajo_stock',
-          mensaje: `${producto.nombre} está por debajo del nivel mínimo (${producto.cantidad} unidades)`,
-          fecha: new Date().toISOString()
-        });
-        registrarHistorial = true;
-      }
+    } catch (error) {
+      console.error('Error al cargar productos:', error);
+    }
+  };
 
-      // Si el estado cambió, actualizar el producto
-      if (nuevoEstado !== producto.estado) {
-        // Registrar en el historial
-        if (registrarHistorial) {
-          const historialEntry = {
-            id: Date.now().toString(),
-            productId: producto.id,
-            productName: producto.nombre,
-            action: nuevoEstado === 'critical' ? 'cierre_ciclo' : 'alerta_stock',
-            quantity: producto.cantidad,
-            previousStock: producto.cantidad,
-            newStock: producto.cantidad,
-            date: new Date().toISOString(),
-            reason: nuevoEstado === 'critical' ? 'Cierre automático por nivel crítico' : 'Nivel bajo de stock',
-            userId: '1',
-            userName: 'Sistema'
-          };
-
-          const historial = JSON.parse(localStorage.getItem('inventario_historial') || '[]');
-          localStorage.setItem('inventario_historial', JSON.stringify([...historial, historialEntry]));
+  const verificarNiveles = (productos: Producto[]) => {
+    const nuevasAlertas = productos.filter(producto => {
+      // Productos próximos a vencer (si tienen fecha de vencimiento)
+      if (producto.fecha_vencimiento) {
+        const diasParaVencer = Math.ceil(
+          (new Date(producto.fecha_vencimiento).getTime() - new Date().getTime()) / 
+          (1000 * 3600 * 24)
+        );
+        if (diasParaVencer <= 30) {
+          return true;
         }
-
-        return {
-          ...producto,
-          estado: nuevoEstado,
-          ciclo_actual: nuevoEstado === 'critical' ? {
-            ...producto.ciclo_actual,
-            fecha_fin: new Date().toISOString()
-          } : producto.ciclo_actual
-        };
       }
 
-      return producto;
-    });
+      // Productos con stock crítico o bajo
+      return producto.cantidad <= producto.critico || 
+             (producto.cantidad <= producto.minimo && producto.estado === 'active');
+    }).map(producto => ({
+      producto_id: producto.id,
+      tipo: producto.cantidad <= producto.critico ? 'critico' : 'bajo_stock',
+      mensaje: generarMensajeAlerta(producto),
+      fecha: new Date().toISOString()
+    }));
 
     setAlertas(nuevasAlertas);
-    if (JSON.stringify(productosActualizados) !== JSON.stringify(productos)) {
-      setProductos(productosActualizados);
-      localStorage.setItem('productos', JSON.stringify(productosActualizados));
-    }
-  }, [productos]);
+  };
 
-  const fetchProductos = () => {
-    const storedProducts = localStorage.getItem('productos');
-    if (storedProducts) {
-      setProductos(JSON.parse(storedProducts));
+  const generarMensajeAlerta = (producto: Producto) => {
+    let mensaje = '';
+    
+    if (producto.cantidad <= producto.critico) {
+      mensaje = `¡CRÍTICO! ${producto.nombre} tiene ${producto.cantidad} ${producto.unidad_medida} (Nivel crítico: ${producto.critico})`;
+    } else if (producto.cantidad <= producto.minimo) {
+      mensaje = `Stock bajo de ${producto.nombre}: ${producto.cantidad} ${producto.unidad_medida} (Mínimo: ${producto.minimo})`;
+    }
+
+    if (producto.fecha_vencimiento) {
+      const diasParaVencer = Math.ceil(
+        (new Date(producto.fecha_vencimiento).getTime() - new Date().getTime()) / 
+        (1000 * 3600 * 24)
+      );
+      if (diasParaVencer <= 30) {
+        mensaje += ` | Vence en ${diasParaVencer} días`;
+      }
+    }
+
+    return mensaje;
+  };
+
+  const actualizarStock = async (productoId: string, cantidad: number, tipo: 'entrada' | 'salida') => {
+    try {
+      const producto = productos.find(p => p.id === productoId);
+      if (!producto) return;
+
+      const nuevaCantidad = tipo === 'entrada' ? 
+        producto.cantidad + cantidad : 
+        producto.cantidad - cantidad;
+
+      const { error } = await supabase
+        .from('productos')
+        .update({ 
+          cantidad: nuevaCantidad,
+          ultimo_movimiento: new Date().toISOString()
+        })
+        .eq('id', productoId);
+
+      if (error) throw error;
+
+      // Registrar movimiento en historial
+      await supabase.from('movimientos_inventario').insert({
+        producto_id: productoId,
+        tipo_movimiento: tipo,
+        cantidad: cantidad,
+        fecha: new Date().toISOString(),
+        usuario_id: '1' // Reemplazar con el ID del usuario actual
+      });
+
+      // Actualizar estado local
+      fetchProductosFromSupabase();
+    } catch (error) {
+      console.error('Error al actualizar stock:', error);
     }
   };
 
@@ -146,6 +178,32 @@ export default function ControlStock() {
 
   return (
     <div className="space-y-6">
+      {/* Filtros y Ordenamiento */}
+      <div className="flex gap-4 mb-4">
+        <Select value={filtroTipo} onValueChange={setFiltroTipo}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Filtrar por tipo" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="todos">Todos</SelectItem>
+            <SelectItem value="alimento">Alimento</SelectItem>
+            <SelectItem value="medicina">Medicina</SelectItem>
+            <SelectItem value="otro">Otro</SelectItem>
+          </SelectContent>
+        </Select>
+
+        <Select value={ordenarPor} onValueChange={setOrdenarPor}>
+          <SelectTrigger className="w-[180px]">
+            <SelectValue placeholder="Ordenar por" />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="nombre">Nombre</SelectItem>
+            <SelectItem value="cantidad">Cantidad</SelectItem>
+            <SelectItem value="vencimiento">Fecha de vencimiento</SelectItem>
+          </SelectContent>
+        </Select>
+      </div>
+
       {/* Alertas de Stock */}
       {alertas.length > 0 && (
         <div className="space-y-4">
@@ -236,4 +294,4 @@ export default function ControlStock() {
       </div>
     </div>
   );
-};
+}

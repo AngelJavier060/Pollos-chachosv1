@@ -116,12 +116,12 @@ export default function UsuariosPage() {
     password: ''
   });
 
-  // Función para validación en tiempo real
+  // Modificar la función validarCampo
   const validarCampo = (campo: string, valor: string) => {
     switch (campo) {
       case 'cedula':
-        if (!validarCedula(valor)) {
-          setErrores(prev => ({...prev, cedula: 'Cédula inválida'}));
+        if (valor.length > 0 && valor.length !== 10) {
+          setErrores(prev => ({...prev, cedula: 'La cédula debe tener 10 dígitos'}));
         } else {
           setErrores(prev => ({...prev, cedula: ''}));
         }
@@ -170,13 +170,14 @@ export default function UsuariosPage() {
     fetchUsers();
   }, []);
 
+  // Modificar handleCrearUsuario
   const handleCrearUsuario = async () => {
     try {
-      // Validaciones previas
-      if (!validarCedula(nuevoUsuario.cedula)) {
+      // Validación básica de cédula
+      if (nuevoUsuario.cedula.length !== 10) {
         toast({
           title: "Error",
-          description: "La cédula ingresada no es válida",
+          description: "La cédula debe tener exactamente 10 dígitos",
           variant: "destructive"
         });
         return;
@@ -533,7 +534,7 @@ export default function UsuariosPage() {
                     />
                   </div>
                   <div className="grid grid-cols-4 items-center gap-4">
-                    <Tooltip content="La cédula debe ser válida y única en el sistema">
+                    <Tooltip content="Ingrese una cédula ecuatoriana válida de 10 dígitos">
                       <Label htmlFor="cedula" className="text-right">
                         Cédula *
                       </Label>
@@ -544,15 +545,23 @@ export default function UsuariosPage() {
                       value={nuevoUsuario.cedula}
                       onChange={(e) => {
                         if (!isEditing) {
-                          setNuevoUsuario({...nuevoUsuario, cedula: e.target.value});
-                          validarCampo('cedula', e.target.value);
+                          const valor = e.target.value.replace(/[^0-9]/g, '').slice(0, 10);
+                          setNuevoUsuario({...nuevoUsuario, cedula: valor});
+                          // Solo validar si hay 10 dígitos o si el usuario deja de escribir
+                          if (valor.length === 10) {
+                            validarCampo('cedula', valor);
+                          }
                         }
                       }}
+                      maxLength={10}
+                      placeholder="Ingrese 10 dígitos"
                       disabled={isEditing}
                       required
                     />
                     {errores.cedula && (
-                      <span className="text-red-500 text-xs mt-1">{errores.cedula}</span>
+                      <span className="col-span-3 col-start-2 text-red-500 text-xs mt-1">
+                        {errores.cedula}
+                      </span>
                     )}
                   </div>
                   <div className="grid grid-cols-4 items-center gap-4">
