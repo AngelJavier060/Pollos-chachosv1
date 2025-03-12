@@ -1,10 +1,24 @@
-import { createClient } from '@supabase/supabase-js';
+import { createClient } from '@supabase/supabase-js'
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_SERVICE_ROLE_KEY;
 
 if (!supabaseUrl || !supabaseKey) {
-  throw new Error('Las variables de entorno de Supabase no están configuradas');
+  throw new Error('Faltan credenciales de Supabase');
 }
 
-export const supabase = createClient(supabaseUrl, supabaseKey);
+export const supabase = createClient(supabaseUrl, supabaseKey, {
+  auth: {
+    persistSession: true,
+    autoRefreshToken: true
+  },
+  db: {
+    schema: 'public'
+  }
+});
+
+// Verificar conexión inmediata
+supabase.from('plan_nutricional').select('count').then(({ error }) => {
+  if (error) console.error('Error de conexión:', error);
+  else console.log('Conexión establecida correctamente');
+});

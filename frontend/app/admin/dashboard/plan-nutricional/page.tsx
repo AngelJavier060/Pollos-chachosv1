@@ -15,6 +15,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { Edit2, Plus, PlusCircle, Trash2, PencilIcon, PlusIcon, MoreVertical, Trash2Icon } from "lucide-react";
 import { supabase } from "@/app/lib/supabase";
 import { toast } from "@/app/components/ui/use-toast";
+import { planNutricionalAPI } from '@/app/lib/planNutricional';
 
 interface PlanAlimentacion {
   id: string;
@@ -139,6 +140,66 @@ export default function PlanNutricionalPage() {
   const [editandoDia, setEditandoDia] = useState<string | null>(null);
   const [lotes, setLotes] = useState<Lote[]>([]);
   const [lotesActivos, setLotesActivos] = useState<{[key: string]: number}>({});
+  const [productoSeleccionado, setProductoSeleccionado] = useState<any>(null);
+  const [formData, setFormData] = useState({
+    tipo_animal: '',
+    etapa: '',
+    producto_id: ''
+  });
+
+  // Modificar el estado para manejar la selección del tipo de animal y etapa
+  const [formState, setFormState] = useState({
+    tipo_animal: '',
+    etapa: '',
+    producto_id: '',
+    productosFiltrados: [] as any[]
+  });
+
+  // Función para manejar el cambio de tipo de animal
+  const handleTipoAnimalChange = async (value: string) => {
+    console.log('Tipo animal seleccionado:', value);
+    setFormState(prev => ({ ...prev, tipo_animal: value, etapa: '', producto_id: '' }));
+
+    try {
+      // Obtener productos filtrados por tipo de animal
+      const { data: productos } = await supabase
+        .from('productos')
+        .select('*')
+        .eq('tipo_animal', value)
+        .eq('tipo', 'alimento');
+
+      console.log('Productos filtrados:', productos);
+
+      // Obtener etapas únicas para este tipo de animal
+      const etapasUnicas = [...new Set(productos?.map(p => p.detalle))].filter(Boolean);
+      console.log('Etapas disponibles:', etapasUnicas);
+
+      setFormState(prev => ({
+        ...prev,
+        productosFiltrados: productos || [],
+        etapasDisponibles: etapasUnicas
+      }));
+    } catch (error) {
+      console.error('Error al obtener productos:', error);
+    }
+  };
+
+  // Función para manejar el cambio de etapa
+  const handleEtapaChange = (value: string) => {
+    console.log('Etapa seleccionada:', value);
+    // Encontrar el producto correspondiente a esta etapa
+    const productoEtapa = formState.productosFiltrados.find(p => p.detalle === value);
+    console.log('Producto encontrado:', productoEtapa);
+
+    if (productoEtapa) {
+      setFormState(prev => ({
+        ...prev,
+        etapa: value,
+        producto_id: productoEtapa.id,
+        productoSeleccionado: productoEtapa
+      }));
+    }
+  };
 
   // Función para obtener las fechas de la semana actual
   const getCurrentWeekDates = () => {
@@ -288,36 +349,48 @@ export default function PlanNutricionalPage() {
   // Función para guardar la programación
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
-    const formData = new FormData(event.target as HTMLFormElement);
+    const formElement = event.target as HTMLFormElement;
+    const formData = new FormData(formElement);
     
     try {
       if (activeTab === 'plan-alimentacion') {
+        // Usar el producto_id del estado formState
         const planData = {
           tipo_animal: formData.get('tipo_animal'),
           etapa: formData.get('etapa'),
           edad_inicio: Number(formData.get('edad_inicio')),
           edad_fin: Number(formData.get('edad_fin')),
-          producto_id: Number(formData.get('alimento')),
+          producto_id: formState.producto_id, // Usar el ID guardado en el estado
           consumo_diario: Number(formData.get('consumo_diario')),
           temperatura: Number(formData.get('temperatura')),
           observaciones: formData.get('observaciones')
         };
-  
+
+        // Validar que existe producto_id
+        if (!planData.producto_id) {
+          throw new Error('Debe seleccionar un producto');
+        }
+
+        console.log('Datos a enviar:', planData);
+
         const { data, error } = await supabase
           .from('plan_nutricional')
           .insert([planData])
           .select()
           .single();
-  
-        if (error) throw error;
-  
+
+        if (error) {
+          console.error('Error de inserción:', error);
+          throw error;
+        }
+
         // Actualizar estado local
         const nuevoPlan = {
           ...planData,
           id: data.id,
-          alimento_nombre: productos.find(p => p.id === planData.producto_id)?.nombre || ''
+          alimento_nombre: formState.productoSeleccionado?.nombre || ''
         };
-  
+
         setPlanes([...planes, nuevoPlan]);
         setShowDialog(false);
         toast({
@@ -396,15 +469,30 @@ export default function PlanNutricionalPage() {
         setShowProgramacionDialog(false);
         setEditandoDia(null);
       }
-    } catch (error) {
-      console.error('Error al guardar:', error);
+    } catch (error: any) {
+      console.error('Error detallado:', error);
       toast({
         title: "Error",
-        description: "No se pudo guardar el plan nutricional",
+        description: error.message || "No se pudo guardar el plan nutricional",
         variant: "destructive"
       });
     }
   };
+
+  // Modificar el useEffect que maneja el cambio de etapa
+  useEffect(() => {
+    if (formState.tipo_animal && formState.etapa) {
+      const productoEtapa = formState.productosFiltrados.find(p => p.detalle === formState.etapa);
+      if (productoEtapa) {
+        console.log('Producto encontrado:', productoEtapa);
+        setFormState(prev => ({
+          ...prev,
+          producto_id: productoEtapa.id,
+          productoSeleccionado: productoEtapa
+        }));
+      }
+    }
+  }, [formState.tipo_animal, formState.etapa]);
 
   const eliminarItem = (id: string) => {
     if (activeTab === 'plan-alimentacion') {
@@ -487,6 +575,47 @@ export default function PlanNutricionalPage() {
         };
       });
   };
+
+  // Cargar etapas cuando cambia el tipo de animal
+  useEffect(() => {
+    if (formData.tipo_animal) {
+      const cargarEtapas = async () => {
+        try {
+          const etapas = await planNutricionalAPI.getEtapasPorTipoAnimal(formData.tipo_animal);
+          setEtapasDisponibles(etapas);
+          // Reset etapa cuando cambia tipo_animal
+          setFormData(prev => ({ ...prev, etapa: '', producto_id: '' }));
+        } catch (error) {
+          console.error('Error al cargar etapas:', error);
+        }
+      };
+      cargarEtapas();
+    }
+  }, [formData.tipo_animal]);
+
+  // Cargar producto cuando cambia la etapa
+  useEffect(() => {
+    if (formData.tipo_animal && formData.etapa) {
+      const cargarProducto = async () => {
+        try {
+          const producto = await planNutricionalAPI.getProductoPorEtapa(
+            formData.tipo_animal,
+            formData.etapa
+          );
+          if (producto) {
+            setProductoSeleccionado(producto);
+            setFormData(prev => ({
+              ...prev,
+              producto_id: producto.id
+            }));
+          }
+        } catch (error) {
+          console.error('Error al cargar producto:', error);
+        }
+      };
+      cargarProducto();
+    }
+  }, [formData.tipo_animal, formData.etapa]);
 
   return (
     <div className="p-6">
@@ -834,9 +963,14 @@ export default function PlanNutricionalPage() {
             </DialogTitle>
           </DialogHeader>
           <form onSubmit={handleSubmit} className="space-y-4">
+            {/* Select de Tipo Animal */}
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="tipo_animal" className="text-right">Tipo Animal</Label>
-              <Select name="tipo_animal">
+              <Select 
+                name="tipo_animal" 
+                value={formState.tipo_animal}
+                onValueChange={handleTipoAnimalChange}
+              >
                 <SelectTrigger className="col-span-3">
                   <SelectValue placeholder="Seleccionar tipo" />
                 </SelectTrigger>
@@ -847,25 +981,40 @@ export default function PlanNutricionalPage() {
               </Select>
             </div>
 
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="etapa" className="text-right">Etapa</Label>
-              <Select name="etapa">
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Seleccionar etapa" />
-                </SelectTrigger>
-                <SelectContent>
-                  {[...new Set(productos
-                    .filter(p => p.tipo === 'alimento' && p.tipo_animal === selectedTipoAnimal)
-                    .map(p => p.detalle))]
-                    .map(etapa => (
+            {/* Select de Etapa (solo visible si hay tipo_animal seleccionado) */}
+            {formState.tipo_animal && (
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label htmlFor="etapa" className="text-right">Etapa</Label>
+                <Select 
+                  name="etapa"
+                  value={formState.etapa}
+                  onValueChange={handleEtapaChange}
+                >
+                  <SelectTrigger className="col-span-3">
+                    <SelectValue placeholder="Seleccionar etapa" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {formState.etapasDisponibles?.map(etapa => (
                       <SelectItem key={etapa} value={etapa}>
                         {etapa}
                       </SelectItem>
                     ))}
-                </SelectContent>
-              </Select>
-            </div>
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
+            {/* Mostrar producto seleccionado automáticamente */}
+            {formState.productoSeleccionado && (
+              <div className="grid grid-cols-4 items-center gap-4">
+                <Label className="text-right">Alimento</Label>
+                <div className="col-span-3 p-2 bg-muted rounded">
+                  {formState.productoSeleccionado.nombre}
+                </div>
+              </div>
+            )}
+
+            {/* Resto de campos del formulario */}
             <div className="grid grid-cols-4 items-center gap-4">
               <Label htmlFor="edad_inicio" className="text-right">Edad Inicio (días)</Label>
               <Input
@@ -886,29 +1035,6 @@ export default function PlanNutricionalPage() {
                 className="col-span-3"
                 min="1"
               />
-            </div>
-
-            <div className="grid grid-cols-4 items-center gap-4">
-              <Label htmlFor="alimento" className="text-right">Alimento</Label>
-              <Select 
-                name="alimento"
-                onValueChange={setSelectedAlimento}
-                value={selectedAlimento}
-              >
-                <SelectTrigger className="col-span-3">
-                  <SelectValue placeholder="Seleccionar alimento" />
-                </SelectTrigger>
-                <SelectContent>
-                  {[...new Set(productos
-                    .filter(p => p.tipo === 'alimento')
-                    .map(p => p.nombre))]
-                    .map(nombre => (
-                      <SelectItem key={nombre} value={nombre}>
-                        {nombre}
-                      </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
             </div>
 
             <div className="grid grid-cols-4 items-center gap-4">
