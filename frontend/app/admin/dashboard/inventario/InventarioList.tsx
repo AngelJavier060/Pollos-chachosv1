@@ -35,12 +35,34 @@ export default function InventarioList() {
   const [searchType, setSearchType] = useState<'nombre' | 'etapa' | 'tipo' | 'animal' | 'proveedor'>('nombre');
   const debouncedSearchTerm = useDebounce(searchTerm, 300);
 
+  const cargarProductos = async () => {
+    try {
+      const response = await api.get('/api/inventario/productos');
+      if (response.success && Array.isArray(response.data)) {
+        setProductos(response.data as Producto[]);
+      } else {
+        toast({
+          title: "Error",
+          description: response.error || "No se pudieron cargar los productos",
+          variant: "destructive"
+        });
+      }
+    } catch (error) {
+      console.error('Error al cargar productos:', error);
+      toast({
+        title: "Error",
+        description: "Error al cargar los productos",
+        variant: "destructive"
+      });
+    }
+  };
+
   const fetchProductos = useCallback(async () => {
     try {
       setLoading(true);
       const response = await api.get('/api/inventario/productos');
-      if (response.success) {
-        setProductos(response.data);
+      if (response.success && Array.isArray(response.data)) {
+        setProductos(response.data as Producto[]);
       } else {
         toast({
           title: "Error",

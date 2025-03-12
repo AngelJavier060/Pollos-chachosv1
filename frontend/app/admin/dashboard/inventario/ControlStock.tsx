@@ -29,6 +29,17 @@ interface Producto {
   proveedor?: string;
   ubicacion?: string;
   ultimo_movimiento?: string;
+  ciclo_actual?: {
+    fecha_inicio: string;
+    fecha_fin?: string;
+  };
+}
+
+interface Alerta {
+  producto_id: string;
+  tipo: "bajo_stock" | "critico";
+  mensaje: string;
+  fecha: string;
 }
 
 export default function ControlStock() {
@@ -64,27 +75,29 @@ export default function ControlStock() {
   };
 
   const verificarNiveles = (productos: Producto[]) => {
-    const nuevasAlertas = productos.filter(producto => {
-      // Productos próximos a vencer (si tienen fecha de vencimiento)
-      if (producto.fecha_vencimiento) {
-        const diasParaVencer = Math.ceil(
-          (new Date(producto.fecha_vencimiento).getTime() - new Date().getTime()) / 
-          (1000 * 3600 * 24)
-        );
-        if (diasParaVencer <= 30) {
-          return true;
+    const nuevasAlertas: Array<{
+      producto_id: string;
+      tipo: 'bajo_stock' | 'critico';
+      mensaje: string;
+      fecha: string;
+    }> = productos
+      .filter(producto => {
+        if (producto.fecha_vencimiento) {
+          const diasParaVencer = Math.ceil(
+            (new Date(producto.fecha_vencimiento).getTime() - new Date().getTime()) / 
+            (1000 * 3600 * 24)
+          );
+          if (diasParaVencer <= 30) return true;
         }
-      }
-
-      // Productos con stock crítico o bajo
-      return producto.cantidad <= producto.critico || 
-             (producto.cantidad <= producto.minimo && producto.estado === 'active');
-    }).map(producto => ({
-      producto_id: producto.id,
-      tipo: producto.cantidad <= producto.critico ? 'critico' : 'bajo_stock',
-      mensaje: generarMensajeAlerta(producto),
-      fecha: new Date().toISOString()
-    }));
+        return producto.cantidad <= producto.critico || 
+               (producto.cantidad <= producto.minimo && producto.estado === 'active');
+      })
+      .map(producto => ({
+        producto_id: producto.id,
+        tipo: producto.cantidad <= producto.critico ? 'critico' as const : 'bajo_stock' as const,
+        mensaje: generarMensajeAlerta(producto),
+        fecha: new Date().toISOString()
+      }));
 
     setAlertas(nuevasAlertas);
   };
@@ -174,6 +187,32 @@ export default function ControlStock() {
       'cycle_ended': 'text-gray-600'
     };
     return colors[estado as keyof typeof colors] || 'text-gray-600';
+  };
+
+  const verificarStock = () => {
+    const nuevasAlertas = productos.flatMap((producto): Alerta[] => {
+      const alertas: Alerta[] = [];
+      
+      if (producto.cantidad <= producto.critico) { // Cambiar nivel_critico por critico
+        alertas.push({
+          producto_id: producto.id,
+          tipo: "critico" as const,
+          mensaje: `Stock crítico: ${producto.cantidad} ${producto.unidad_medida}`,
+          fecha: new Date().toISOString()
+        });
+      } else if (producto.cantidad <= producto.minimo) { // Cambiar nivel_minimo por minimo
+        alertas.push({
+          producto_id: producto.id,
+          tipo: "bajo_stock" as const,
+          mensaje: `Stock bajo: ${producto.cantidad} ${producto.unidad_medida}`,
+          fecha: new Date().toISOString()
+        });
+      }
+      
+      return alertas;
+    });
+  
+    setAlertas(nuevasAlertas);
   };
 
   return (

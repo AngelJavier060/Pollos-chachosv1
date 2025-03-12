@@ -23,7 +23,7 @@ interface PlanAlimentacion {
   etapa: string;
   edad_inicio: number;
   edad_fin: number;
-  alimento_id: string;
+  alimento_id: string;     // Asegurarnos que este campo existe
   alimento_nombre: string;
   consumo_diario: number;
   temperatura: number;
@@ -119,6 +119,15 @@ interface Lote {
   estado: string;
 }
 
+interface FormStateType {
+  tipo_animal: string;
+  etapa: string;
+  producto_id: string;
+  productosFiltrados: any[];
+  productoSeleccionado: any | undefined;
+  etapasDisponibles: string[];
+}
+
 export default function PlanNutricionalPage() {
   const { theme } = useTheme();
   const [activeTab, setActiveTab] = useState('plan-alimentacion');
@@ -148,11 +157,13 @@ export default function PlanNutricionalPage() {
   });
 
   // Modificar el estado para manejar la selección del tipo de animal y etapa
-  const [formState, setFormState] = useState({
+  const [formState, setFormState] = useState<FormStateType>({
     tipo_animal: '',
     etapa: '',
     producto_id: '',
-    productosFiltrados: [] as any[]
+    productosFiltrados: [],
+    productoSeleccionado: undefined,
+    etapasDisponibles: []
   });
 
   // Función para manejar el cambio de tipo de animal
@@ -161,7 +172,6 @@ export default function PlanNutricionalPage() {
     setFormState(prev => ({ ...prev, tipo_animal: value, etapa: '', producto_id: '' }));
 
     try {
-      // Obtener productos filtrados por tipo de animal
       const { data: productos } = await supabase
         .from('productos')
         .select('*')
@@ -170,8 +180,13 @@ export default function PlanNutricionalPage() {
 
       console.log('Productos filtrados:', productos);
 
-      // Obtener etapas únicas para este tipo de animal
-      const etapasUnicas = [...new Set(productos?.map(p => p.detalle))].filter(Boolean);
+      // Obtener etapas únicas sin usar spread operator
+      const etapasSet = new Set<string>();
+      productos?.forEach(p => {
+        if (p.detalle) etapasSet.add(p.detalle);
+      });
+      const etapasUnicas = Array.from(etapasSet).filter(Boolean);
+      
       console.log('Etapas disponibles:', etapasUnicas);
 
       setFormState(prev => ({
@@ -354,24 +369,20 @@ export default function PlanNutricionalPage() {
     
     try {
       if (activeTab === 'plan-alimentacion') {
-        // Usar el producto_id del estado formState
         const planData = {
           tipo_animal: formData.get('tipo_animal'),
           etapa: formData.get('etapa'),
           edad_inicio: Number(formData.get('edad_inicio')),
           edad_fin: Number(formData.get('edad_fin')),
-          producto_id: formState.producto_id, // Usar el ID guardado en el estado
+          producto_id: formState.producto_id,
           consumo_diario: Number(formData.get('consumo_diario')),
           temperatura: Number(formData.get('temperatura')),
           observaciones: formData.get('observaciones')
         };
 
-        // Validar que existe producto_id
         if (!planData.producto_id) {
           throw new Error('Debe seleccionar un producto');
         }
-
-        console.log('Datos a enviar:', planData);
 
         const { data, error } = await supabase
           .from('plan_nutricional')
@@ -379,16 +390,20 @@ export default function PlanNutricionalPage() {
           .select()
           .single();
 
-        if (error) {
-          console.error('Error de inserción:', error);
-          throw error;
-        }
+        if (error) throw error;
 
-        // Actualizar estado local
-        const nuevoPlan = {
-          ...planData,
+        // Actualizar estado local con el tipo correcto
+        const nuevoPlan: PlanAlimentacion = {
           id: data.id,
-          alimento_nombre: formState.productoSeleccionado?.nombre || ''
+          tipo_animal: planData.tipo_animal as 'pollos' | 'chanchos',
+          etapa: planData.etapa as string,
+          edad_inicio: planData.edad_inicio,
+          edad_fin: planData.edad_fin,
+          alimento_id: planData.producto_id,  // Asignar producto_id a alimento_id
+          alimento_nombre: formState.productoSeleccionado?.nombre || '',
+          consumo_diario: planData.consumo_diario,
+          temperatura: planData.temperatura,
+          observaciones: planData.observaciones as string | undefined
         };
 
         setPlanes([...planes, nuevoPlan]);
@@ -469,7 +484,7 @@ export default function PlanNutricionalPage() {
         setShowProgramacionDialog(false);
         setEditandoDia(null);
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Error detallado:', error);
       toast({
         title: "Error",

@@ -1,6 +1,6 @@
 'use client';
 
-import React from 'react';
+import React, { useState } from 'react';
 import {
   Card,
   CardContent,
@@ -33,9 +33,14 @@ interface HistoryEntry {
   userName: string;
 }
 
-export const InventoryHistory = () => {
-  const [dateRange, setDateRange] = React.useState<{ from: Date; to: Date } | undefined>();
-  const [filterType, setFilterType] = React.useState<string>("all");
+interface DateRange {
+  from: Date;
+  to: Date;
+}
+
+export default function InventoryHistory() {
+  const [dateRange, setDateRange] = useState<DateRange | undefined>();
+  const [filterType, setFilterType] = useState<string>("all");
 
   return (
     <Card className="w-full">
@@ -50,7 +55,7 @@ export const InventoryHistory = () => {
           <div className="flex-1">
             <DatePickerWithRange 
               date={dateRange}
-              setDate={setDateRange}
+              setDate={(date) => setDateRange(date as DateRange)}
             />
           </div>
           <Select
@@ -138,5 +143,3 @@ const HistoryCard = ({ entry }: { entry: HistoryEntry }) => {
     </div>
   );
 };
-
-export default InventoryHistory;
