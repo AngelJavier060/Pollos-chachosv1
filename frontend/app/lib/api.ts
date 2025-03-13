@@ -1,26 +1,5 @@
-import { createClient } from '@supabase/supabase-js'
 import { Producto, MovimientoInventario } from '../admin/types/inventario'
-
-// Verifica que las variables de entorno estén definidas
-if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-  throw new Error('NEXT_PUBLIC_SUPABASE_URL no está definida')
-}
-if (!process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY) {
-  throw new Error('NEXT_PUBLIC_SUPABASE_ANON_KEY no está definida')
-}
-
-const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL!
-const supabaseKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
-
-const supabase = createClient(supabaseUrl, supabaseKey, {
-  db: {
-    schema: 'public'
-  },
-  auth: {
-    persistSession: false,
-    autoRefreshToken: true
-  }
-})
+import { supabase } from './supabase'
 
 export const api = {
   async get(url: string) {

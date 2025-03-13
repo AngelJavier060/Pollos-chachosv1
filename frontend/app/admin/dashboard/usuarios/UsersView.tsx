@@ -1,84 +1,99 @@
+'use client';
+
+import { useState, useEffect } from 'react';
 import { supabase } from '@/app/lib/supabase';
+import { User } from '@supabase/supabase-js';
+import { Loader2 } from 'lucide-react';
+import { toast } from "@/app/components/ui/use-toast";
 
-const fetchUsers = async () => {
-  try {
-    console.log('Iniciando fetchUsers...');
-    console.log('URL de Supabase:', process.env.NEXT_PUBLIC_SUPABASE_URL);
-    
-    const { data, error } = await supabase
-      .from('usuarios')
-      .select('*')
-      .order('id', { ascending: true });
+export default function UsersView() {
+  const [loading, setLoading] = useState(true);
+  const [users, setUsers] = useState<User[]>([]);
+  const [error, setError] = useState<string | null>(null);
 
-    console.log('Respuesta de Supabase:', { data, error });
+  const fetchUsers = async () => {
+    try {
+      // Primero verificar la sesión
+      const { data: { session }, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
 
-    if (error) {
+      if (!session) {
+        throw new Error('No hay sesión activa');
+      }
+
+      // Usar la API de administración de auth
+      const { data: { users }, error } = await supabase.auth.admin.listUsers();
+      
+      if (error) throw error;
+      
+      console.log('Usuarios obtenidos:', users);
+      setUsers(users || []);
+      
+    } catch (error) {
+      console.error('Error al cargar usuarios:', error);
+      toast({
+        title: "Error",
+        description: error.message || "No se pudieron cargar los usuarios",
+        variant: "destructive",
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const createUser = async (userData: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('usuarios')
+        .insert([userData])
+        .select()
+        .single();
+
+      if (error) throw error;
+      await fetchUsers(); // Recargar usuarios después de crear uno nuevo
+      return data;
+    } catch (error) {
+      console.error('Error al crear usuario:', error);
       throw error;
     }
+  };
 
-    if (data) {
-      console.log('Usuarios encontrados:', data.length);
-      setUsers(data);
-    } else {
-      console.log('No se encontraron usuarios');
+  const updateUser = async (id: string, userData: any) => {
+    try {
+      const { data, error } = await supabase
+        .from('usuarios')
+        .update(userData)
+        .eq('id', id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      await fetchUsers(); // Recargar usuarios después de actualizar
+      return data;
+    } catch (error) {
+      console.error('Error al actualizar usuario:', error);
+      throw error;
     }
+  };
 
-  } catch (error) {
-    console.error('Error detallado:', error);
-    toast({
-      title: "Error",
-      description: "No se pudieron cargar los usuarios",
-      variant: "destructive",
-    });
-  }
-};
+  const deleteUser = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('usuarios')
+        .delete()
+        .eq('id', id);
 
-// Crear usuario
-const createUser = async (userData) => {
-  try {
-    const { data, error } = await supabase
-      .from('usuarios')
-      .insert([userData])
-      .select()
-      .single();
+      if (error) throw error;
+      await fetchUsers(); // Recargar usuarios después de eliminar
+    } catch (error) {
+      console.error('Error al eliminar usuario:', error);
+      throw error;
+    }
+  };
 
-    if (error) throw error;
-    return data;
-  } catch (error) {
-    console.error('Error al crear usuario:', error);
-    throw error;
-  }
-};
+  useEffect(() => {
+    fetchUsers();
+  }, []);
 
-// Actualizar usuario
-const updateUser = async (id, userData) => {
-  try {
-    const { data, error } = await supabase
-      .from('usuarios')
-      .update(userData)
-      .eq('id', id)
-      .select()
-      .single();
-
-    if (error) throw error;
-    return data;
-  } catch (error) {
-    console.error('Error al actualizar usuario:', error);
-    throw error;
-  }
-};
-
-// Eliminar usuario
-const deleteUser = async (id) => {
-  try {
-    const { error } = await supabase
-      .from('usuarios')
-      .delete()
-      .eq('id', id);
-
-    if (error) throw error;
-  } catch (error) {
-    console.error('Error al eliminar usuario:', error);
-    throw error;
-  }
-};
+  // ...resto del código existente...
+}

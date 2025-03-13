@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { Button } from "@/app/components/ui/button";
 import { Plus, ListPlus, Info, Search } from 'lucide-react';
@@ -15,84 +15,87 @@ import {
 } from "@/app/components/ui/dialog";
 import { Input } from "@/app/components/ui/input";
 import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from "@/app/components/ui/select";
-import { supabase } from '../lib/supabase';
+import { supabase, checkConnection, testQuery } from '../lib/supabase';
+import { toast } from "@/app/components/ui/use-toast"; // Añadir esta importación
 
-// Función para cargar datos del localStorage
-const loadLotesFromStorage = () => {
-  try {
-    if (typeof window !== 'undefined') {
-      const savedLotes = localStorage.getItem('lotes');
-      return savedLotes ? JSON.parse(savedLotes) : [];
-    }
-    return [];
-  } catch (error) {
-    console.error('Error al cargar datos:', error);
-    return [];
-  }
-};
+interface LotesViewProps {
+  lotes: any[];
+  setLotes?: (lotes: any[]) => void;
+}
 
-// Función para guardar datos en localStorage
-const saveLotesToStorage = (lotes: any[]) => {
-  try {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('lotes', JSON.stringify(lotes));
-    }
-  } catch (error) {
-    console.error('Error al guardar datos:', error);
-  }
-};
-
-const LotesView = () => {
+export function LotesView({ lotes: initialLotes = [], setLotes: setParentLotes }: LotesViewProps) {
   const router = useRouter();
-  const [lotes, setLotes] = useState<any[]>([]);
+  const [localLotes, setLocalLotes] = useState<any[]>(initialLotes || []);
   const [isOpen, setIsOpen] = useState(false);
   const [editingLote, setEditingLote] = useState<any>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [tipoFilter, setTipoFilter] = useState<'todos' | 'pollo' | 'chancho'>('todos');
 
-  // Reemplazar la carga desde localStorage por Supabase
+  const syncLotes = useCallback((lotes: any[]) => {
+    setLocalLotes(lotes);
+    if (setParentLotes) {
+      setParentLotes(lotes);
+    }
+  }, [setParentLotes]);
+
   useEffect(() => {
-    const fetchLotes = async () => {
+    if (initialLotes?.length > 0) {
+      syncLotes(initialLotes);
+    }
+  }, [initialLotes, syncLotes]);
+
+  useEffect(() => {
+    const initConnection = async () => {
       try {
-        // Verificar sesión actual
+        // Verificar la sesión primero
         const { data: { session }, error: sessionError } = await supabase.auth.getSession();
         
-        if (sessionError) {
-          console.error('Error de sesión:', sessionError);
-          throw sessionError;
-        }
-
+        if (sessionError) throw sessionError;
+        
         if (!session) {
-          console.log('No hay sesión activa, redirigiendo...');
+          toast({
+            title: "Error de autenticación",
+            description: "Por favor inicie sesión nuevamente",
+            variant: "destructive",
+          });
           router.push('/auth/admin');
           return;
         }
 
-        // Intentar la consulta con el token de la sesión
-        const { data, error } = await supabase
+        // Verificar conexión después de autenticación
+        const isConnected = await checkConnection();
+        if (!isConnected) {
+          console.error('No se pudo conectar a Supabase');
+          toast({
+            title: "Error de conexión",
+            description: "No se pudo conectar a la base de datos",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Cargar datos iniciales
+        const { data: lotesData, error: lotesError } = await supabase
           .from('lotes')
           .select('*')
           .order('created_at', { ascending: false });
 
-        if (error) {
-          console.error('Error de Supabase:', error);
-          throw error;
-        }
-
-        console.log('Datos recuperados:', data);
-        setLotes(data || []);
+        if (lotesError) throw lotesError;
+        
+        syncLotes(lotesData || []);
+        
       } catch (error) {
-        console.error('Error completo:', error);
-        if (error === 'JWT expired') {
-          router.push('/auth/admin');
-        } else {
-          alert('Error al cargar los lotes. Detalles en la consola.');
-        }
+        console.error('Error al inicializar:', error);
+        toast({
+          title: "Error",
+          description: "Error al cargar los datos",
+          variant: "destructive",
+        });
       }
     };
 
-    fetchLotes();
-  }, [router]);
+    initConnection();
+  }, [router, syncLotes]);
 
   const handleSubmit = async (formData: any) => {
     try {
@@ -137,7 +140,7 @@ const LotesView = () => {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      setLotes(data || []);
+      syncLotes(data || []);
       setIsOpen(false);
       setEditingLote(null);
     } catch (error) {
@@ -161,7 +164,7 @@ const LotesView = () => {
 
         if (error) throw error;
 
-        setLotes(lotes.filter(lote => lote.id !== id));
+        syncLotes(localLotes.filter(lote => lote.id !== id));
       }
     } catch (error) {
       console.error('Error:', error);
@@ -170,7 +173,8 @@ const LotesView = () => {
   };
 
   // Filtrar lotes basado en búsqueda y tipo
-  const filteredLotes = lotes.filter(lote => {
+  const filteredLotes = (localLotes || []).filter(lote => {
+    if (!lote?.nombre || !lote?.raza) return false;
     const matchesSearch = lote.nombre.toLowerCase().includes(searchQuery.toLowerCase()) ||
                          lote.raza.toLowerCase().includes(searchQuery.toLowerCase());
     const matchesTipo = tipoFilter === 'todos' || lote.tipo_animal === tipoFilter;
@@ -188,7 +192,6 @@ const LotesView = () => {
             Gestiona los lotes de pollos y chanchos de la granja
           </p>
         </div>
-
         <Button 
           onClick={() => {
             setEditingLote(null);
@@ -203,7 +206,6 @@ const LotesView = () => {
 
       <div className="rounded-xl bg-white p-6 shadow-sm border border-gray-200">
         <div className="flex flex-col sm:flex-row gap-4 mb-6">
-          {/* Barra de búsqueda */}
           <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
             <Input
@@ -214,8 +216,7 @@ const LotesView = () => {
             />
           </div>
 
-          {/* Filtro de tipo */}
-          <Select value={tipoFilter} onValueChange={(value: any) => setTipoFilter(value)}>
+          <Select value={tipoFilter} onValueChange={(value: 'todos' | 'pollo' | 'chancho') => setTipoFilter(value)}>
             <SelectTrigger className="w-[180px]">
               <SelectValue placeholder="Filtrar por tipo" />
             </SelectTrigger>
@@ -264,6 +265,4 @@ const LotesView = () => {
       </Dialog>
     </div>
   );
-};
-
-export { LotesView };
+}
